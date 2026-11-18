@@ -1,4 +1,5 @@
 use crate::cartridge::Cartridge;
+use crate::apu::Apu;
 use crate::dma::Channel;
 use crate::ppu::Ppu;
 
@@ -27,7 +28,7 @@ pub struct Bus {
     pub hdmaen: u8,
     pub memsel: u8,
     pub wram_addr: u32,
-    pub apu: [u8; 4],
+    pub apu: Apu,
     pub dma: [Channel; 8],
     pub stall: u32, // master-такты, потраченные DMA
     pub ppu: Ppu,
@@ -42,7 +43,7 @@ impl Bus {
             htime: 0x1FF, vtime: 0x1FF, vblank: false, hclock: 0,
             wrmpya: 0xFF, wrdiv: 0xFFFF, rddiv: 0, rdmpy: 0,
             hdmaen: 0, memsel: 0, wram_addr: 0,
-            apu: [0xAA, 0xBB, 0, 0],
+            apu: Apu::new(),
             dma: [Channel::default(); 8],
             stall: 0,
             ppu: Ppu::new(),
@@ -160,7 +161,7 @@ impl Bus {
     /// B-шина ($2100–$21FF): регистры PPU/APU/WRAM-порт.
     pub fn b_read(&mut self, reg: u8) -> u8 {
         match reg {
-            0x40..=0x43 => self.apu[(reg & 3) as usize],
+            0x40..=0x7F => self.apu.port_read((reg & 3) as usize),
             0x80 => {
                 let v = self.wram[self.wram_addr as usize];
                 self.wram_addr = (self.wram_addr + 1) & 0x1FFFF;
@@ -172,9 +173,7 @@ impl Bus {
 
     pub fn b_write(&mut self, reg: u8, v: u8) {
         match reg {
-            // Заглушка вместо SPC700: порты «эхом» возвращают записанное.
-            // Этого хватает, чтобы пройти рукопожатие загрузчика у многих игр.
-            0x40..=0x43 => self.apu[(reg & 3) as usize] = v,
+            0x40..=0x7F => self.apu.port_write((reg & 3) as usize, v),
             0x80 => {
                 let a = self.wram_addr as usize;
                 self.wram[a] = v;

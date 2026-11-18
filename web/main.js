@@ -108,7 +108,7 @@ function frame(t) {
   let ran = false;
   while (acc >= STEP) { emu.run_frame(); acc -= STEP; ran = true; }
   if (ran) {
-    dbg.textContent = emu.cpu_state();
+    dbg.textContent = emu.cpu_state() + '\n' + emu.spc_state();
     const px = new Uint8ClampedArray(wasm.memory.buffer, emu.framebuffer_ptr(), W * H * 4);
     ctx.putImageData(new ImageData(px, W, H), 0, 0);
   }

@@ -32,12 +32,13 @@ jobs:
       - name: Build wasm
         run: wasm-pack build --release --target web --out-dir web/pkg
       # Тест-ROM gilyon/snes-tests через собранный wasm: в логе все упавшие тесты.
-      # Пока не блокируют деплой; когда всё пройдёт — убрать continue-on-error.
       - name: CPU test ROMs
-        continue-on-error: true
         run: |
           node tools/cputest.mjs tests/data/cputest-basic.sfc tests/data/cputest-basic.txt
           node tools/cputest.mjs tests/data/cputest-full.sfc tests/data/cputest-full.txt
+      - name: SPC700 test ROM
+        continue-on-error: true
+        run: node tools/spctest.mjs tests/data/spctest.sfc tests/data/spctest.txt
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web

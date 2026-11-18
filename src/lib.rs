@@ -1,3 +1,4 @@
+mod apu;
 mod bus;
 mod cartridge;
 mod cpu;
@@ -96,6 +97,7 @@ impl Emulator {
                 self.cpu.irq = self.bus.timeup;
                 self.bus.hclock = h;
                 let cycles = self.cpu.step(&mut self.bus) + std::mem::take(&mut self.bus.stall);
+                self.bus.apu.clock(cycles);
                 let next = h + cycles;
                 self.check_irq(v, h, next);
                 h = next;
@@ -107,6 +109,10 @@ impl Emulator {
 
     pub fn cpu_state(&self) -> String {
         self.cpu.debug()
+    }
+
+    pub fn spc_state(&self) -> String {
+        self.bus.apu.debug()
     }
 
     /// Указатель на RGBA-буфер 256x224 в памяти wasm.
