@@ -20,6 +20,7 @@ pub struct Cpu {
     pub pbr: u8, pub dbr: u8, pub p: u8, pub emulation: bool,
     pub nmi: bool, pub irq: bool, pub waiting: bool, pub stopped: bool,
     cycles: u32,
+    nw: bool, // «новые» стековые инструкции в режиме эмуляции не заворачивают S внутри страницы 1
 }
 
 impl Cpu {
@@ -80,11 +81,11 @@ impl Cpu {
         let a = self.sp as u32;
         self.wr8(bus, a, v);
         let sp = self.sp.wrapping_sub(1);
-        self.sp = if self.emulation { 0x100 | (sp & 0xFF) } else { sp };
+        self.sp = if self.emulation && !self.nw { 0x100 | (sp & 0xFF) } else { sp };
     }
     fn pull8(&mut self, bus: &mut Bus) -> u8 {
         let sp = self.sp.wrapping_add(1);
-        self.sp = if self.emulation { 0x100 | (sp & 0xFF) } else { sp };
+        self.sp = if self.emulation && !self.nw { 0x100 | (sp & 0xFF) } else { sp };
         let a = self.sp as u32;
         self.rd8(bus, a)
     }
@@ -120,6 +121,15 @@ impl Cpu {
     }
 
     // ---------- адресация ----------
+    /// dp+off+idx. В режиме эмуляции при DL=0 индексация заворачивается внутри страницы.
+    fn dp_idx(&self, off: u16, idx: u16) -> u32 {
+        if self.emulation && self.dp & 0xFF == 0 {
+            (self.dp | (off.wrapping_add(idx) & 0xFF)) as u32
+        } else {
+            self.dp.wrapping_add(off).wrapping_add(idx) as u32
+        }
+    }
+
     fn ea(&mut self, bus: &mut Bus, am: Am, wide: bool) -> u32 {
         let dbr = (self.dbr as u32) << 16;
         match am {
@@ -129,15 +139,22 @@ impl Cpu {
                 a
             }
             Am::Dp => { let o = self.fetch8(bus) as u16; self.dp.wrapping_add(o) as u32 }
-            Am::DpX => { let o = self.fetch8(bus) as u16; self.dp.wrapping_add(o).wrapping_add(self.x) as u32 }
-            Am::DpY => { let o = self.fetch8(bus) as u16; self.dp.wrapping_add(o).wrapping_add(self.y) as u32 }
+            Am::DpX => { let o = self.fetch8(bus) as u16; self.dp_idx(o, self.x) }
+            Am::DpY => { let o = self.fetch8(bus) as u16; self.dp_idx(o, self.y) }
             Am::Abs => dbr | self.fetch16(bus) as u32,
             Am::AbsX => (dbr | self.fetch16(bus) as u32).wrapping_add(self.x as u32) & 0xFF_FFFF,
             Am::AbsY => (dbr | self.fetch16(bus) as u32).wrapping_add(self.y as u32) & 0xFF_FFFF,
             Am::Long => self.fetch24(bus),
             Am::LongX => self.fetch24(bus).wrapping_add(self.x as u32) & 0xFF_FFFF,
             Am::DpI => { let p = self.ea(bus, Am::Dp, false); dbr | self.rd16(bus, p) as u32 }
-            Am::DpIX => { let p = self.ea(bus, Am::DpX, false); dbr | self.rd16(bus, p) as u32 }
+            Am::DpIX => {
+                let p = self.ea(bus, Am::DpX, false);
+                let lo = self.rd8(bus, p) as u32;
+                // в режиме эмуляции старший байт указателя читается с переносом внутри страницы
+                let hp = if self.emulation { (p & 0xFF00) | ((p + 1) & 0xFF) } else { (p + 1) & 0xFFFF };
+                let hi = self.rd8(bus, hp) as u32;
+                dbr | (hi << 8) | lo
+            }
             Am::DpIY => { let p = self.ea(bus, Am::Dp, false); (dbr | self.rd16(bus, p) as u32).wrapping_add(self.y as u32) & 0xFF_FFFF }
             Am::DpIL => { let p = self.ea(bus, Am::Dp, false); self.rd24(bus, p) }
             Am::DpILY => { let p = self.ea(bus, Am::Dp, false); self.rd24(bus, p).wrapping_add(self.y as u32) & 0xFF_FFFF }
@@ -156,21 +173,32 @@ impl Cpu {
         let a = self.ac(wide) as u32;
         let m = v as u32;
         let c = (self.p & C) as u32;
-        let bin = a + m + c;
-        self.set_flag(V, (!(a ^ m) & (a ^ bin) & sign) != 0);
         let res;
         if self.p & D != 0 {
+            let n: u32 = if wide { 4 } else { 2 };
             let (mut r, mut carry) = (0u32, c);
-            for i in 0..(if wide { 4 } else { 2 }) {
+            for i in 0..n - 1 {
                 let sh = i * 4;
                 let mut d = ((a >> sh) & 0xF) + ((m >> sh) & 0xF) + carry;
                 if d > 9 { d += 6; }
                 carry = (d > 0xF) as u32;
                 r |= (d & 0xF) << sh;
             }
+            // старший разряд: V считается до десятичной поправки, по знаковой сумме
+            let sh = (n - 1) * 4;
+            let (at, mt) = ((a >> sh) & 0xF, (m >> sh) & 0xF);
+            let sext = |x: u32| if x >= 8 { x as i32 - 16 } else { x as i32 };
+            let top = sext(at) + sext(mt) + carry as i32;
+            self.set_flag(V, top > 7 || top < -8);
+            let mut d = at + mt + carry;
+            if d > 9 { d += 6; }
+            carry = (d > 0xF) as u32;
+            r |= (d & 0xF) << sh;
             res = r;
             self.set_flag(C, carry != 0);
         } else {
+            let bin = a + m + c;
+            self.set_flag(V, (!(a ^ m) & (a ^ bin) & sign) != 0);
             res = bin & mask;
             self.set_flag(C, bin > mask);
         }
@@ -378,6 +406,8 @@ impl Cpu {
             return;
         }
 
+        // PEA PEI PER PHD PLD PLB JSL RTL JSR(abs,X): S без завёртывания в странице 1
+        self.nw = matches!(op, 0xF4 | 0xD4 | 0x62 | 0x0B | 0x2B | 0xAB | 0x22 | 0x6B | 0xFC);
         match op {
             // сдвиги, INC, DEC в памяти
             0x06 | 0x0E | 0x16 | 0x1E | 0x26 | 0x2E | 0x36 | 0x3E | 0x46 | 0x4E | 0x56 | 0x5E
@@ -486,7 +516,7 @@ impl Cpu {
                 if !self.emulation { self.pbr = self.pull8(bus); }
             }
             0x00 => { self.fetch8(bus); self.interrupt(bus, 0xFFE6, 0xFFFE, true); }
-            0x02 => { self.fetch8(bus); self.interrupt(bus, 0xFFE4, 0xFFF4, false); }
+            0x02 => { self.fetch8(bus); self.interrupt(bus, 0xFFE4, 0xFFF4, true); }
 
             // флаги
             0x18 => self.p &= !C,
@@ -578,6 +608,10 @@ impl Cpu {
             0x42 => { self.fetch8(bus); }
             _ => {} // 0xEA NOP
         }
+        if self.nw {
+            self.nw = false;
+            if self.emulation { self.sp = 0x100 | (self.sp & 0xFF); }
+        }
     }
 }
 
@@ -631,6 +665,21 @@ mod tests {
         assert_eq!(c.x, 1);
         assert_eq!(c.pc, 5);
         assert_eq!(c.sp, 0x01FF);
+    }
+
+    #[test]
+    fn bcd_overflow_flag() {
+        // SED; SEC; LDA #$79; ADC #$00 → $80, V=1 (классический случай десятичного режима)
+        let c = run(&[0xF8, 0x38, 0xA9, 0x79, 0x69, 0x00], 4);
+        assert_eq!(c.a & 0xFF, 0x80);
+        assert!(c.p & V != 0 && c.p & N != 0);
+    }
+
+    #[test]
+    fn emulation_dp_indexed_wraps_in_page() {
+        // LDA #$42; STA $08; LDX #$10; LDA $F8,X → адрес ($F8+$10)&$FF = $08, а не $108
+        let c = run(&[0xA9, 0x42, 0x85, 0x08, 0xA2, 0x10, 0xB5, 0xF8], 4);
+        assert_eq!(c.a & 0xFF, 0x42);
     }
 
     #[test]

@@ -29,15 +29,15 @@ jobs:
           version: latest
       - name: Unit tests
         run: cargo test -- --skip cputest
-      # Тест-ROM gilyon/snes-tests. Пока не блокируют деплой: смотрим лог и чиним CPU.
-      - name: CPU test ROM (basic)
-        continue-on-error: true
-        run: cargo test cputest_basic -- --nocapture
-      - name: CPU test ROM (full)
-        continue-on-error: true
-        run: cargo test cputest_full -- --ignored --nocapture
       - name: Build wasm
         run: wasm-pack build --release --target web --out-dir web/pkg
+      # Тест-ROM gilyon/snes-tests через собранный wasm: в логе все упавшие тесты.
+      # Пока не блокируют деплой; когда всё пройдёт — убрать continue-on-error.
+      - name: CPU test ROMs
+        continue-on-error: true
+        run: |
+          node tools/cputest.mjs tests/data/cputest-basic.sfc tests/data/cputest-basic.txt
+          node tools/cputest.mjs tests/data/cputest-full.sfc tests/data/cputest-full.txt
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web
