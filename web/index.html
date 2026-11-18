@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SNES Web</title>
+<style>
+:root{--bg:#1e1b26;--panel:#2a2635;--fg:#e8e4f0;--mute:#8d86a3;--line:#3d3850;color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;gap:14px;padding:16px}
+canvas{width:min(100%,768px);aspect-ratio:8/7;image-rendering:pixelated;background:#000;border-radius:6px}
+.bar{display:flex;gap:10px;align-items:center;width:min(100%,768px)}
+.bar span{color:var(--mute);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+button,label.btn{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 12px;cursor:pointer}
+button:focus-visible,label.btn:focus-within{outline:2px solid #9d8cff;outline-offset:2px}
+input[type=file]{position:absolute;opacity:0;width:0;height:0}
+details{width:min(100%,768px);background:var(--panel);border-radius:8px;padding:10px 12px}
+summary{cursor:pointer}
+details p{color:var(--mute);margin:10px 0}
+.binds{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:8px;margin-top:12px}
+.binds button{display:flex;justify-content:space-between;gap:8px;background:var(--bg);border-left:4px solid var(--c,var(--mute));text-align:left}
+.binds button i{font-style:normal;color:var(--mute)}
+.binds button.on{background:var(--c,var(--mute));color:#fff}
+.binds button.on i{color:#fff}
+.binds button.wait{outline:2px dashed #9d8cff}
+[data-n=A]{--c:#d1403c}[data-n=B]{--c:#e0b83a}[data-n=X]{--c:#3b63c4}[data-n=Y]{--c:#3f9a55}
+[data-n=B].on,[data-n=B].on i{color:#1e1b26}
+#dbg{margin:0;width:min(100%,768px);color:var(--mute);font:13px ui-monospace,monospace;overflow-x:auto}
+</style>
+</head>
+<body>
+<canvas id="screen" width="256" height="224"></canvas>
+<div class="bar">
+  <label class="btn">Загрузить ROM<input id="rom" type="file" accept=".sfc,.smc,.swc,.fig"></label>
+  <span id="status">ROM не загружен</span>
+</div>
+<pre id="dbg"></pre>
+<details open>
+  <summary>Управление</summary>
+  <div class="binds" id="binds"></div>
+  <p>Нажми на кнопку, затем на нужную клавишу. Esc — отмена.</p>
+  <button id="reset">Сбросить по умолчанию</button>
+</details>
+<script type="module" src="main.js"></script>
+</body>
+</html>

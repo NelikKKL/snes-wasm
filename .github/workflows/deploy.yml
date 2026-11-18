@@ -1,0 +1,54 @@
+name: Build & Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+      - name: Unit tests
+        run: cargo test -- --skip cputest
+      # Тест-ROM gilyon/snes-tests. Пока не блокируют деплой: смотрим лог и чиним CPU.
+      - name: CPU test ROM (basic)
+        continue-on-error: true
+        run: cargo test cputest_basic -- --nocapture
+      - name: CPU test ROM (full)
+        continue-on-error: true
+        run: cargo test cputest_full -- --ignored --nocapture
+      - name: Build wasm
+        run: wasm-pack build --release --target web --out-dir web/pkg
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
