@@ -29,6 +29,8 @@ const CYCLES: [u8; 256] = [
     2, 8, 4, 5, 4, 5, 5, 6, 3, 4, 5, 4, 2, 2, 4, 3,
 ];
 
+use crate::dsp::Dsp;
+
 const C: u8 = 0x01;
 const Z: u8 = 0x02;
 const I: u8 = 0x04;
@@ -51,7 +53,9 @@ pub struct Apu {
     to_apu: [u8; 4],   // записано S-CPU, читается SPC700 в $F4–$F7
     from_apu: [u8; 4], // записано SPC700, читается S-CPU в $2140–$2143
     dsp_addr: u8,
-    pub dsp: [u8; 128],
+    dsp: Dsp,
+    dsp_cycles: u32,
+    pub out: Vec<i16>, // стерео-отсчёты DSP (32 кГц, L/R вперемешку), забирает JS
     t_en: [bool; 3],
     t_target: [u8; 3],
     t_acc: [u32; 3], // предделитель: 128, 128 и 16 тактов
@@ -66,7 +70,7 @@ impl Apu {
         let mut apu = Apu {
             ram: vec![0; 0x10000], a: 0, x: 0, y: 0, sp: 0xEF, pc: 0, psw: 0,
             halted: false, ipl_on: true, to_apu: [0; 4], from_apu: [0; 4],
-            dsp_addr: 0, dsp: [0; 128],
+            dsp_addr: 0, dsp: Dsp::new(), dsp_cycles: 0, out: Vec::new(),
             t_en: [false; 3], t_target: [0; 3], t_acc: [0; 3], t_cnt: [0; 3], t_out: [0; 3],
             budget: 0, acc: 0,
         };
@@ -112,7 +116,7 @@ impl Apu {
     fn read_io(&mut self, r: u8) -> u8 {
         match r {
             0xF2 => self.dsp_addr,
-            0xF3 => self.dsp[(self.dsp_addr & 0x7F) as usize],
+            0xF3 => self.dsp.read(self.dsp_addr & 0x7F),
             0xF4..=0xF7 => self.to_apu[(r - 0xF4) as usize],
             0xF8 | 0xF9 => self.ram[r as usize],
             0xFD..=0xFF => {
@@ -138,7 +142,7 @@ impl Apu {
                 self.ipl_on = v & 0x80 != 0;
             }
             0xF2 => self.dsp_addr = v,
-            0xF3 => { if self.dsp_addr < 0x80 { self.dsp[self.dsp_addr as usize] = v; } }
+            0xF3 => { if self.dsp_addr < 0x80 { self.dsp.write(self.dsp_addr, v); } }
             0xF4..=0xF7 => self.from_apu[(r - 0xF4) as usize] = v,
             0xFA..=0xFC => self.t_target[(r - 0xFA) as usize] = v,
             _ => {}
@@ -284,11 +288,29 @@ impl Apu {
 
     // ---------- выполнение ----------
     pub fn step(&mut self) -> u32 {
-        if self.halted { return 2; }
+        if self.halted {
+            self.tick_timers(2);
+            self.run_dsp(2);
+            return 2;
+        }
         let op = self.fetch();
         let cyc = CYCLES[op as usize] as u32 + self.exec(op);
         self.tick_timers(cyc);
+        self.run_dsp(cyc);
         cyc
+    }
+
+    /// DSP выдаёт один отсчёт каждые 32 такта SPC700 (1.024 МГц / 32 = 32 кГц).
+    fn run_dsp(&mut self, cycles: u32) {
+        self.dsp_cycles += cycles;
+        while self.dsp_cycles >= 32 {
+            self.dsp_cycles -= 32;
+            let (l, r) = self.dsp.sample(&mut self.ram);
+            if self.out.len() < 1 << 16 {
+                self.out.push(l);
+                self.out.push(r);
+            }
+        }
     }
 
     /// Возвращает дополнительные такты (взятые переходы).

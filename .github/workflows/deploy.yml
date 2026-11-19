@@ -37,7 +37,6 @@ jobs:
           node tools/cputest.mjs tests/data/cputest-basic.sfc tests/data/cputest-basic.txt
           node tools/cputest.mjs tests/data/cputest-full.sfc tests/data/cputest-full.txt
       - name: SPC700 test ROM
-        continue-on-error: true
         run: node tools/spctest.mjs tests/data/spctest.sfc tests/data/spctest.txt
       - uses: actions/upload-pages-artifact@v3
         with:

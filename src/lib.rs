@@ -2,6 +2,7 @@ mod apu;
 mod bus;
 mod cartridge;
 mod cpu;
+mod dsp;
 mod dma;
 mod ppu;
 #[cfg(test)]
@@ -109,6 +110,11 @@ impl Emulator {
 
     pub fn cpu_state(&self) -> String {
         self.cpu.debug()
+    }
+
+    /// Накопленные стерео-отсчёты DSP (32 кГц, L/R вперемешку).
+    pub fn take_audio(&mut self) -> Vec<i16> {
+        std::mem::take(&mut self.bus.apu.out)
     }
 
     pub fn spc_state(&self) -> String {

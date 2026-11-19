@@ -68,6 +68,7 @@ addEventListener('keydown', e => {
     renderBinds();
     return;
   }
+  if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   down.add(e.code);
   if (Object.values(binds).includes(e.code)) e.preventDefault();
 });
@@ -83,6 +84,33 @@ function padMask() {
 const ctx = document.getElementById('screen').getContext('2d');
 const status = document.getElementById('status');
 const dbg = document.getElementById('dbg');
+
+// ---- звук ----
+let audioCtx = null, audioNode = null, muted = false;
+async function startAudio() {
+  if (audioCtx) { if (audioCtx.state === 'suspended') audioCtx.resume(); return; }
+  try {
+    audioCtx = new AudioContext({ latencyHint: 'interactive' });
+    await audioCtx.audioWorklet.addModule('audio-worklet.js');
+    audioNode = new AudioWorkletNode(audioCtx, 'snes-audio', { outputChannelCount: [2] });
+    audioNode.connect(audioCtx.destination);
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+  } catch (err) {
+    console.warn('Звук недоступен:', err);
+    audioCtx = null; audioNode = null;
+  }
+}
+function sendAudio() {
+  const pcm = emu.take_audio(); // забираем всегда, чтобы буфер в wasm не рос
+  if (audioNode && !muted && pcm.length) audioNode.port.postMessage(pcm, [pcm.buffer]);
+}
+const muteBtn = document.getElementById('mute');
+muteBtn.onclick = () => {
+  muted = !muted;
+  muteBtn.textContent = muted ? 'Звук: выкл' : 'Звук: вкл';
+  startAudio();
+};
+document.getElementById('rom').addEventListener('click', startAudio);
 let wasm, emu = null, last = 0, acc = 0;
 
 document.getElementById('rom').onchange = async e => {
@@ -108,6 +136,7 @@ function frame(t) {
   let ran = false;
   while (acc >= STEP) { emu.run_frame(); acc -= STEP; ran = true; }
   if (ran) {
+    sendAudio();
     dbg.textContent = emu.cpu_state() + '\n' + emu.spc_state();
     const px = new Uint8ClampedArray(wasm.memory.buffer, emu.framebuffer_ptr(), W * H * 4);
     ctx.putImageData(new ImageData(px, W, H), 0, 0);
