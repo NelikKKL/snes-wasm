@@ -16,3 +16,7 @@ codegen-units = 1
 
 [profile.test]
 opt-level = 2
+
+# wasm-opt из wasm-pack не разбирает современный wasm (несколько таблиц) и роняет сборку
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false
