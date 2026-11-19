@@ -39,10 +39,13 @@ class SnesAudio extends AudioWorkletProcessor {
   }
 
   process(inputs, outputs) {
+    // динамическая подстройка скорости (±0.5%): держит очередь около 50 мс при любой частоте кадров
+    const err = (this.pairs - 1600) / 1600;
+    const step = this.step * (1 + Math.max(-0.005, Math.min(0.005, err * 0.01)));
     const L = outputs[0][0];
     const R = outputs[0][1] || L;
     for (let i = 0; i < L.length; i++) {
-      this.frac += this.step;
+      this.frac += step;
       while (this.frac >= 1) {
         this.frac -= 1;
         this.al = this.bl; this.ar = this.br;

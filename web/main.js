@@ -99,7 +99,31 @@ function padMask() {
   return m;
 }
 
-const ctx = document.getElementById('screen').getContext('2d');
+const view = document.getElementById('screen');
+const vctx = view.getContext('2d');
+const src = document.createElement('canvas'); // «сырой» кадр 256×224
+src.width = W; src.height = H;
+const sctx = src.getContext('2d');
+let hasFrame = false;
+function redraw() {
+  if (!hasFrame) return;
+  vctx.imageSmoothingEnabled = false;
+  vctx.drawImage(src, 0, 0, view.width, view.height);
+}
+// Целочисленный масштаб в физических пикселях экрана: при нецелом масштабе колонки пикселей
+// получаются разной ширины и при горизонтальном скролле картинка «дрожит».
+function fit() {
+  const dpr = window.devicePixelRatio || 1;
+  const avail = Math.min(document.documentElement.clientWidth - 32, 1024);
+  const scale = Math.max(1, Math.floor((avail * dpr) / W));
+  view.width = W * scale;
+  view.height = H * scale;
+  view.style.width = `${(W * scale) / dpr}px`;
+  view.style.height = `${(H * scale) / dpr}px`;
+  redraw();
+}
+addEventListener('resize', fit);
+fit();
 const status = document.getElementById('status');
 const dbg = document.getElementById('dbg');
 
@@ -191,21 +215,38 @@ pauseBtn.onclick = () => {
 };
 document.getElementById('restart').onclick = () => { if (romBytes) loadRom(romBytes, romName); };
 
+let dtAvg = 1000 / 60, tick = 0;
 function frame(t) {
   requestAnimationFrame(frame);
   const dt = t - last; last = t;
+  if (dt > 2 && dt < 100) dtAvg += (dt - dtAvg) * 0.05; // сглаженный период обновления экрана
   for (const [name] of BUTTONS) btnEls[name]?.classList.toggle('on', down.has(binds[name]));
   if (!emu || paused) { acc = 0; return; }
-  acc = Math.min(acc + dt, STEP * 3);
   emu.set_joypad(padMask());
-  let ran = false;
-  while (acc >= STEP) { emu.run_frame(); acc -= STEP; ran = true; }
+  // Если частота экрана кратна ~60 Гц (60/120/180/240), привязываемся к ней: ровно один кадр
+  // эмулятора на N кадров экрана. Иначе — накопитель времени (возможны небольшие рывки).
+  const hz = 1000 / dtAvg;
+  const n = Math.max(1, Math.round(hz / 60.0988));
+  const locked = Math.abs(hz / n - 60.0988) < 2.5;
+  let frames = 0;
+  if (locked) {
+    acc = 0;
+    if (++tick >= n) { tick = 0; frames = 1; }
+  } else {
+    tick = 0;
+    acc = Math.min(acc + dt, STEP * 3);
+    while (acc >= STEP) { acc -= STEP; frames++; }
+  }
+  for (let i = 0; i < frames; i++) emu.run_frame();
+  const ran = frames > 0;
   if (ran) {
     sendAudio();
     if (++sramTick % 120 === 0) saveSram(false); // раз в ~2 с, если SRAM менялась
     dbg.textContent = emu.cpu_state() + '\n' + emu.spc_state();
     const px = new Uint8ClampedArray(wasm.memory.buffer, emu.framebuffer_ptr(), W * H * 4);
-    ctx.putImageData(new ImageData(px, W, H), 0, 0);
+    sctx.putImageData(new ImageData(px, W, H), 0, 0);
+    hasFrame = true;
+    redraw();
   }
 }
 

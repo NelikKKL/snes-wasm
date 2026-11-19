@@ -41,7 +41,8 @@ impl Emulator {
             }
         }
         if v == VBLANK_START + 3 { b.joy_busy = false; }
-        if v < VBLANK_START { b.hdma_run(); }
+        // HDMA для строки N выполняется в конце строки N−1: первая передача идёт перед строкой 1
+        if (1..=VBLANK_START).contains(&v) { b.hdma_run(); }
         // строка 1..=224 рисуется после HDMA, когда регистры уже обновлены
         if (1..=224).contains(&v) { b.ppu.render_line((v - 1) as usize); }
         // IRQ только по V: срабатывает в начале строки VTIME
@@ -91,7 +92,15 @@ impl Emulator {
         for v in 0..LINES {
             self.start_line(v);
             let mut h = self.carry;
+            let mut refreshed = false;
             while h < LINE_CLOCKS {
+                // обновление DRAM: раз в строку CPU стоит 40 master-тактов (APU при этом идёт)
+                if !refreshed && h >= 538 {
+                    refreshed = true;
+                    h += 40;
+                    self.bus.apu.clock(40);
+                    continue;
+                }
                 if self.bus.nmi_trigger {
                     self.bus.nmi_trigger = false;
                     self.cpu.nmi = true;

@@ -9,6 +9,27 @@ const M: u8 = 0x20;
 const V: u8 = 0x40;
 const N: u8 = 0x80;
 
+/// Внутренние (idle) такты по опкодам: полное число тактов 65816 минус обращения к шине
+/// (при M=X=1, DL=0, без пересечения страницы). Каждый стоит 6 master-тактов.
+const IDLE: [u8; 256] = [
+    0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0,
+    0, 0, 0, 2, 1, 1, 2, 0, 1, 0, 1, 1, 1, 0, 2, 0,
+    1, 1, 1, 1, 0, 0, 1, 0, 2, 0, 1, 2, 0, 0, 1, 0,
+    0, 0, 0, 2, 1, 1, 2, 0, 1, 0, 1, 1, 0, 0, 2, 0,
+    2, 1, 0, 1, 2, 0, 1, 0, 1, 0, 1, 1, 0, 0, 1, 0,
+    0, 0, 0, 2, 2, 1, 2, 0, 1, 0, 1, 1, 0, 0, 2, 0,
+    3, 1, 1, 1, 0, 0, 1, 0, 2, 0, 1, 2, 0, 0, 1, 0,
+    0, 0, 0, 2, 1, 1, 2, 0, 1, 0, 2, 1, 1, 0, 2, 0,
+    0, 1, 1, 1, 0, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 0,
+    0, 1, 0, 2, 1, 1, 1, 0, 1, 1, 1, 1, 0, 1, 1, 0,
+    0, 1, 0, 1, 0, 0, 0, 0, 1, 0, 1, 2, 0, 0, 0, 0,
+    0, 0, 0, 2, 1, 1, 1, 0, 1, 0, 1, 1, 0, 0, 0, 0,
+    0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 2, 0, 0, 1, 0,
+    0, 0, 0, 2, 0, 1, 2, 0, 1, 0, 1, 2, 0, 0, 2, 0,
+    0, 1, 1, 1, 0, 0, 1, 0, 1, 0, 1, 2, 0, 0, 1, 0,
+    0, 0, 0, 2, 0, 1, 2, 0, 1, 0, 2, 1, 1, 0, 2, 0,
+];
+
 #[derive(Clone, Copy, PartialEq)]
 enum Am { Imm, Dp, DpX, DpY, Abs, AbsX, AbsY, Long, LongX, DpI, DpIX, DpIY, DpIL, DpILY, Sr, SrIY }
 
@@ -21,6 +42,7 @@ pub struct Cpu {
     pub nmi: bool, pub irq: bool, pub waiting: bool, pub stopped: bool,
     cycles: u32,
     nw: bool, // «новые» стековые инструкции в режиме эмуляции не заворачивают S внутри страницы 1
+    no_cross: bool, // операции записи/RMW: штрафа за пересечение страницы нет (такт уже в таблице)
 }
 
 impl Cpu {
@@ -121,6 +143,16 @@ impl Cpu {
     }
 
     // ---------- адресация ----------
+    /// +1 такт, если младший байт D не нулевой (режимы direct page).
+    fn dl_penalty(&mut self) {
+        if self.dp & 0xFF != 0 { self.cycles += 6; }
+    }
+
+    /// +1 такт при индексации через границу страницы или 16-битном индексе (только чтения).
+    fn idx_penalty(&mut self, base: u32, addr: u32) {
+        if !self.no_cross && (!self.x8() || (base & 0xFF00) != (addr & 0xFF00)) { self.cycles += 6; }
+    }
+
     /// dp+off+idx. В режиме эмуляции при DL=0 индексация заворачивается внутри страницы.
     fn dp_idx(&self, off: u16, idx: u16) -> u32 {
         if self.emulation && self.dp & 0xFF == 0 {
@@ -138,12 +170,22 @@ impl Cpu {
                 self.pc = self.pc.wrapping_add(1 + wide as u16);
                 a
             }
-            Am::Dp => { let o = self.fetch8(bus) as u16; self.dp.wrapping_add(o) as u32 }
-            Am::DpX => { let o = self.fetch8(bus) as u16; self.dp_idx(o, self.x) }
-            Am::DpY => { let o = self.fetch8(bus) as u16; self.dp_idx(o, self.y) }
+            Am::Dp => { self.dl_penalty(); let o = self.fetch8(bus) as u16; self.dp.wrapping_add(o) as u32 }
+            Am::DpX => { self.dl_penalty(); let o = self.fetch8(bus) as u16; self.dp_idx(o, self.x) }
+            Am::DpY => { self.dl_penalty(); let o = self.fetch8(bus) as u16; self.dp_idx(o, self.y) }
             Am::Abs => dbr | self.fetch16(bus) as u32,
-            Am::AbsX => (dbr | self.fetch16(bus) as u32).wrapping_add(self.x as u32) & 0xFF_FFFF,
-            Am::AbsY => (dbr | self.fetch16(bus) as u32).wrapping_add(self.y as u32) & 0xFF_FFFF,
+            Am::AbsX => {
+                let b = dbr | self.fetch16(bus) as u32;
+                let a = b.wrapping_add(self.x as u32) & 0xFF_FFFF;
+                self.idx_penalty(b, a);
+                a
+            }
+            Am::AbsY => {
+                let b = dbr | self.fetch16(bus) as u32;
+                let a = b.wrapping_add(self.y as u32) & 0xFF_FFFF;
+                self.idx_penalty(b, a);
+                a
+            }
             Am::Long => self.fetch24(bus),
             Am::LongX => self.fetch24(bus).wrapping_add(self.x as u32) & 0xFF_FFFF,
             Am::DpI => { let p = self.ea(bus, Am::Dp, false); dbr | self.rd16(bus, p) as u32 }
@@ -155,7 +197,13 @@ impl Cpu {
                 let hi = self.rd8(bus, hp) as u32;
                 dbr | (hi << 8) | lo
             }
-            Am::DpIY => { let p = self.ea(bus, Am::Dp, false); (dbr | self.rd16(bus, p) as u32).wrapping_add(self.y as u32) & 0xFF_FFFF }
+            Am::DpIY => {
+                let p = self.ea(bus, Am::Dp, false);
+                let b = dbr | self.rd16(bus, p) as u32;
+                let a = b.wrapping_add(self.y as u32) & 0xFF_FFFF;
+                self.idx_penalty(b, a);
+                a
+            }
             Am::DpIL => { let p = self.ea(bus, Am::Dp, false); self.rd24(bus, p) }
             Am::DpILY => { let p = self.ea(bus, Am::Dp, false); self.rd24(bus, p).wrapping_add(self.y as u32) & 0xFF_FFFF }
             Am::Sr => { let o = self.fetch8(bus) as u16; self.sp.wrapping_add(o) as u32 }
@@ -365,24 +413,27 @@ impl Cpu {
             self.nmi = false;
             self.waiting = false;
             self.interrupt(bus, 0xFFEA, 0xFFFA, false);
+            self.cycles += 12; // два внутренних такта входа в прерывание
             return self.cycles.max(1);
         }
         if self.irq {
             self.waiting = false;
             if self.p & I == 0 {
                 self.interrupt(bus, 0xFFEE, 0xFFFE, false);
+                self.cycles += 12;
                 return self.cycles.max(1);
             }
         }
         if self.waiting { return 6; }
         let op = self.fetch8(bus);
         self.exec(bus, op);
-        self.cycles += 6; // грубая оценка внутренних тактов (точная таблица — позже)
+        self.cycles += 6 * IDLE[op as usize] as u32; // внутренние такты по таблице WDC
         self.cycles.max(1)
     }
 
     fn exec(&mut self, bus: &mut Bus, op: u8) {
         use Am::*;
+        self.no_cross = matches!(op, 0x99 | 0x9D | 0x9E | 0x91 | 0x1E | 0x3E | 0x5E | 0x7E | 0xDE | 0xFE);
         let aaa = op >> 5;
         let bbb = ((op >> 2) & 7) as usize;
 
@@ -665,6 +716,14 @@ mod tests {
         assert_eq!(c.x, 1);
         assert_eq!(c.pc, 5);
         assert_eq!(c.sp, 0x01FF);
+    }
+
+    #[test]
+    fn instruction_timing_follows_datasheet() {
+        // код в WRAM: каждое обращение стоит 8 master-тактов, внутренний такт — 6
+        assert_eq!(run(&[0xEA], 1).cycles, 8 + 6); // NOP: 2 такта (1 обращение + 1 внутренний)
+        assert_eq!(run(&[0xA5, 0x10], 1).cycles, 3 * 8); // LDA dp: 3 такта
+        assert_eq!(run(&[0x48], 1).cycles, 2 * 8 + 6); // PHA: 3 такта
     }
 
     #[test]
