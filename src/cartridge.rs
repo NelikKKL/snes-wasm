@@ -9,6 +9,7 @@ pub struct Cartridge {
     pub sram: Vec<u8>,
     pub mapping: Mapping,
     pub title: String,
+    pub dirty: bool, // SRAM менялась с момента последнего сохранения
 }
 
 /// Оценка правдоподобности заголовка по смещению `base` (0x7FC0 или 0xFFC0).
@@ -49,7 +50,7 @@ impl Cartridge {
         let h = &rom[base..base + 0x40];
         let title = String::from_utf8_lossy(&h[..21]).trim().to_string();
         let sram_kb = if h[0x18] == 0 { 0 } else { 1usize << h[0x18].min(8) };
-        Ok(Cartridge { rom: rom.to_vec(), sram: vec![0; sram_kb * 1024], mapping, title })
+        Ok(Cartridge { rom: rom.to_vec(), sram: vec![0; sram_kb * 1024], mapping, title, dirty: false })
     }
 
     fn sram_index(&self, bank: u8, off: u16) -> Option<usize> {
@@ -85,6 +86,7 @@ impl Cartridge {
     pub fn write(&mut self, bank: u8, off: u16, val: u8) {
         if let Some(i) = self.sram_index(bank, off) {
             self.sram[i] = val;
+            self.dirty = true;
         }
     }
 }

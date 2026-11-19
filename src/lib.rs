@@ -25,6 +25,7 @@ pub struct Emulator {
 impl Emulator {
     fn start_line(&mut self, v: u16) {
         let b = &mut self.bus;
+        b.vline = v;
         if v == 0 {
             b.vblank = false;
             b.nmi_flag = false;
@@ -115,6 +116,24 @@ impl Emulator {
     /// Накопленные стерео-отсчёты DSP (32 кГц, L/R вперемешку).
     pub fn take_audio(&mut self) -> Vec<i16> {
         std::mem::take(&mut self.bus.apu.out)
+    }
+
+    pub fn sram_len(&self) -> usize {
+        self.bus.cart.sram.len()
+    }
+
+    pub fn sram(&self) -> Vec<u8> {
+        self.bus.cart.sram.clone()
+    }
+
+    pub fn load_sram(&mut self, data: &[u8]) {
+        let n = data.len().min(self.bus.cart.sram.len());
+        self.bus.cart.sram[..n].copy_from_slice(&data[..n]);
+    }
+
+    /// true, если SRAM менялась с прошлого вызова.
+    pub fn take_sram_dirty(&mut self) -> bool {
+        std::mem::take(&mut self.bus.cart.dirty)
     }
 
     pub fn spc_state(&self) -> String {

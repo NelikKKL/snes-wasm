@@ -75,8 +75,26 @@ addEventListener('keydown', e => {
 addEventListener('keyup', e => down.delete(e.code));
 addEventListener('blur', () => down.clear());
 
-function padMask() {
+// кнопка стандартного геймпада → бит маски JOY1 (нижняя A → SNES B, как на Xbox/SNES-раскладке)
+const PAD = [
+  [0, 15], [1, 7], [2, 14], [3, 6], [4, 5], [5, 4], [8, 13], [9, 12],
+  [12, 11], [13, 10], [14, 9], [15, 8],
+];
+function gamepadMask() {
   let m = 0;
+  for (const gp of navigator.getGamepads?.() ?? []) {
+    if (!gp) continue;
+    for (const [i, bit] of PAD) if (gp.buttons[i]?.pressed) m |= 1 << bit;
+    const x = gp.axes[0] ?? 0, y = gp.axes[1] ?? 0;
+    if (x < -0.5) m |= 1 << 9;
+    if (x > 0.5) m |= 1 << 8;
+    if (y < -0.5) m |= 1 << 11;
+    if (y > 0.5) m |= 1 << 10;
+  }
+  return m;
+}
+function padMask() {
+  let m = gamepadMask();
   for (const [name, bit] of BUTTONS) if (down.has(binds[name])) m |= 1 << bit;
   return m;
 }
@@ -111,32 +129,80 @@ muteBtn.onclick = () => {
   startAudio();
 };
 document.getElementById('rom').addEventListener('click', startAudio);
-let wasm, emu = null, last = 0, acc = 0;
+let wasm, emu = null, last = 0, acc = 0, paused = false;
+let romBytes = null, romName = '', romKey = null, sramTick = 0;
 
-document.getElementById('rom').onchange = async e => {
-  const file = e.target.files[0];
-  if (!file) return;
+// ---- сохранения (SRAM картриджа) в localStorage ----
+function fnv(u8) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < u8.length; i++) { h ^= u8[i]; h = Math.imul(h, 0x01000193); }
+  return (h >>> 0).toString(16);
+}
+function toB64(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function fromB64(s) {
+  const b = atob(s), u = new Uint8Array(b.length);
+  for (let i = 0; i < b.length; i++) u[i] = b.charCodeAt(i);
+  return u;
+}
+function saveSram(force) {
+  if (!emu || !romKey || emu.sram_len() === 0) return;
+  const dirty = emu.take_sram_dirty();
+  if (!dirty && !force) return;
+  try { localStorage.setItem(romKey, toB64(emu.sram())); }
+  catch (err) { console.warn('Не удалось сохранить SRAM:', err); }
+}
+addEventListener('pagehide', () => saveSram(true));
+document.addEventListener('visibilitychange', () => { if (document.hidden) saveSram(true); });
+
+function loadRom(bytes, name) {
   try {
-    const next = new Emulator(new Uint8Array(await file.arrayBuffer()));
+    const next = new Emulator(bytes);
+    saveSram(true);
     emu?.free();
     emu = next;
-    status.textContent = `${emu.title() || file.name} (${emu.mapping()})`;
+    romBytes = bytes; romName = name;
+    romKey = 'snes-sram:' + fnv(bytes) + ':' + bytes.length;
+    let note = '';
+    if (emu.sram_len() > 0) {
+      note = ' · сохранения';
+      try {
+        const saved = localStorage.getItem(romKey);
+        if (saved) emu.load_sram(fromB64(saved));
+      } catch (err) { console.warn('Не удалось прочитать SRAM:', err); }
+    }
+    status.textContent = `${emu.title() || name} (${emu.mapping()})${note}`;
   } catch (err) {
     status.textContent = `Ошибка: ${err}`;
   }
+}
+
+document.getElementById('rom').onchange = async e => {
+  const file = e.target.files[0];
+  if (file) loadRom(new Uint8Array(await file.arrayBuffer()), file.name);
 };
+const pauseBtn = document.getElementById('pause');
+pauseBtn.onclick = () => {
+  paused = !paused;
+  pauseBtn.textContent = paused ? 'Продолжить' : 'Пауза';
+};
+document.getElementById('restart').onclick = () => { if (romBytes) loadRom(romBytes, romName); };
 
 function frame(t) {
   requestAnimationFrame(frame);
   const dt = t - last; last = t;
   for (const [name] of BUTTONS) btnEls[name]?.classList.toggle('on', down.has(binds[name]));
-  if (!emu) { acc = 0; return; }
+  if (!emu || paused) { acc = 0; return; }
   acc = Math.min(acc + dt, STEP * 3);
   emu.set_joypad(padMask());
   let ran = false;
   while (acc >= STEP) { emu.run_frame(); acc -= STEP; ran = true; }
   if (ran) {
     sendAudio();
+    if (++sramTick % 120 === 0) saveSram(false); // раз в ~2 с, если SRAM менялась
     dbg.textContent = emu.cpu_state() + '\n' + emu.spc_state();
     const px = new Uint8ClampedArray(wasm.memory.buffer, emu.framebuffer_ptr(), W * H * 4);
     ctx.putImageData(new ImageData(px, W, H), 0, 0);

@@ -9,7 +9,7 @@
 *{box-sizing:border-box}
 body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font:15px/1.4 system-ui,sans-serif;display:flex;flex-direction:column;align-items:center;gap:14px;padding:16px}
 canvas{width:min(100%,768px);aspect-ratio:8/7;image-rendering:pixelated;background:#000;border-radius:6px}
-.bar{display:flex;gap:10px;align-items:center;width:min(100%,768px)}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;width:min(100%,768px)}
 .bar span{color:var(--mute);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 button,label.btn{font:inherit;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 12px;cursor:pointer}
 button:focus-visible,label.btn:focus-within{outline:2px solid #9d8cff;outline-offset:2px}
@@ -33,13 +33,15 @@ details p{color:var(--mute);margin:10px 0}
 <div class="bar">
   <label class="btn">Загрузить ROM<input id="rom" type="file" accept=".sfc,.smc,.swc,.fig"></label>
   <span id="status">ROM не загружен</span>
+  <button id="pause">Пауза</button>
+  <button id="restart">Сброс</button>
   <button id="mute">Звук: вкл</button>
 </div>
 <pre id="dbg"></pre>
 <details open>
   <summary>Управление</summary>
   <div class="binds" id="binds"></div>
-  <p>Нажми на кнопку, затем на нужную клавишу. Esc — отмена.</p>
+  <p>Нажми на кнопку, затем на нужную клавишу. Esc — отмена. Геймпад подхватывается автоматически (стандартная раскладка). Сохранения игр пишутся в браузер сами.</p>
   <button id="reset">Сбросить по умолчанию</button>
 </details>
 <script type="module" src="main.js"></script>

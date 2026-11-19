@@ -32,6 +32,7 @@ pub struct Bus {
     pub dma: [Channel; 8],
     pub stall: u32, // master-такты, потраченные DMA
     pub ppu: Ppu,
+    pub vline: u16, // текущая строка (для защёлки счётчиков $2137)
 }
 
 impl Bus {
@@ -47,6 +48,7 @@ impl Bus {
             dma: [Channel::default(); 8],
             stall: 0,
             ppu: Ppu::new(),
+            vline: 0,
         }
     }
 
@@ -167,6 +169,7 @@ impl Bus {
                 self.wram_addr = (self.wram_addr + 1) & 0x1FFFF;
                 v
             }
+            0x37 => { self.ppu.latch_counters((self.hclock / 4) as u16, self.vline); 0 }
             _ => self.ppu.read(reg),
         }
     }

@@ -38,6 +38,8 @@ jobs:
           node tools/cputest.mjs tests/data/cputest-full.sfc tests/data/cputest-full.txt
       - name: SPC700 test ROM
         run: node tools/spctest.mjs tests/data/spctest.sfc tests/data/spctest.txt
+      - name: DSP audio (end-to-end)
+        run: node tools/audiotest.mjs
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web

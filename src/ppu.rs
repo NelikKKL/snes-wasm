@@ -60,6 +60,12 @@ pub struct Ppu {
     m7hofs: i16,
     m7vofs: i16,
     m7_latch: u8,
+    mosaic: u8,
+    hlatch: u16,
+    vlatch: u16,
+    h_toggle: bool,
+    v_toggle: bool,
+    latched: bool,
 }
 
 fn sext13(w: u16) -> i16 {
@@ -76,10 +82,18 @@ impl Ppu {
             ts: 0, tmw: 0, tsw: 0, w12sel: 0, w34sel: 0, wobjsel: 0, wh: [0; 4],
             wbglog: 0, wobjlog: 0, cgwsel: 0, cgadsub: 0, fixed: 0,
             m7sel: 0, m7: [0; 4], m7x: 0, m7y: 0, m7hofs: 0, m7vofs: 0, m7_latch: 0,
+            mosaic: 0, hlatch: 0, vlatch: 0, h_toggle: false, v_toggle: false, latched: false,
         }
     }
 
     // ---------- регистры ----------
+    /// Чтение $2137: фиксирует текущие H (точки) и V (строка).
+    pub fn latch_counters(&mut self, h: u16, v: u16) {
+        self.hlatch = h;
+        self.vlatch = v;
+        self.latched = true;
+    }
+
     fn vinc(&self) -> u16 {
         match self.vmain & 3 { 0 => 1, 1 => 32, _ => 128 }
     }
@@ -107,6 +121,7 @@ impl Ppu {
                 self.oam_addr = (self.oam_addr + 1) & 0x3FF;
             }
             0x05 => self.bgmode = v,
+            0x06 => self.mosaic = v, // биты 7-4: размер−1, биты 3-0: BG1..BG4
             0x07..=0x0A => self.bgsc[(reg - 7) as usize] = v,
             0x0B => self.bgnba[0] = v,
             0x0C => self.bgnba[1] = v,
@@ -209,8 +224,26 @@ impl Ppu {
                 let r = (self.m7[0] as i32) * ((self.m7[1] >> 8) as i8 as i32);
                 (r >> ((reg - 0x34) * 8)) as u8
             }
+            // счётчики H/V, зафиксированные чтением $2137: сначала младший байт, потом бит 8
+            0x3C => {
+                let v = if !self.h_toggle { self.hlatch as u8 } else { (self.hlatch >> 8) as u8 & 1 };
+                self.h_toggle = !self.h_toggle;
+                v
+            }
+            0x3D => {
+                let v = if !self.v_toggle { self.vlatch as u8 } else { (self.vlatch >> 8) as u8 & 1 };
+                self.v_toggle = !self.v_toggle;
+                v
+            }
             0x3E => 0x01,
-            0x3F => 0x03,
+            0x3F => {
+                // чтение сбрасывает переключатели и флаг защёлки
+                let v = 0x03 | ((self.latched as u8) << 6);
+                self.h_toggle = false;
+                self.v_toggle = false;
+                self.latched = false;
+                v
+            }
             _ => 0,
         }
     }
@@ -253,7 +286,18 @@ impl Ppu {
         } else if mode <= 4 {
             for bg in 0..4 {
                 if en & (1 << bg) != 0 && BPP[mode][bg] != 0 {
-                    self.render_bg(bg, y, &mut layers[bg], &mut prios[bg]);
+                    // мозаика: линия и колонки повторяются блоками size×size
+                    let size = ((self.mosaic >> 4) + 1) as usize;
+                    let mos = self.mosaic & (1 << bg) != 0 && size > 1;
+                    let ye = if mos { y - y % size } else { y };
+                    self.render_bg(bg, ye, &mut layers[bg], &mut prios[bg]);
+                    if mos {
+                        for x in 0..W {
+                            let s = x - x % size;
+                            layers[bg][x] = layers[bg][s];
+                            prios[bg][x] = prios[bg][s];
+                        }
+                    }
                 }
             }
         } // TODO: режимы 5–6 (hires)
@@ -571,6 +615,16 @@ mod tests {
         p.write(0x1C, 0);
         p.write(0x1C, 5);
         assert_eq!((p.read(0x34), p.read(0x35), p.read(0x36)), (15, 0, 0));
+    }
+
+    #[test]
+    fn hv_latch_reads_low_then_high() {
+        let mut p = Ppu::new();
+        p.latch_counters(300, 100);
+        assert_eq!((p.read(0x3C), p.read(0x3C)), (0x2C, 1));
+        assert_eq!((p.read(0x3D), p.read(0x3D)), (100, 0));
+        assert_eq!(p.read(0x3F) & 0x40, 0x40);
+        assert_eq!(p.read(0x3F) & 0x40, 0);
     }
 
     #[test]
