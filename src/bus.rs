@@ -2,6 +2,7 @@ use crate::cartridge::Cartridge;
 use crate::apu::Apu;
 use crate::dma::Channel;
 use crate::ppu::Ppu;
+use crate::upd7725::Upd7725;
 
 pub struct Bus {
     pub cart: Cartridge,
@@ -33,6 +34,7 @@ pub struct Bus {
     pub stall: u32, // master-такты, потраченные DMA
     pub ppu: Ppu,
     pub vline: u16, // текущая строка (для защёлки счётчиков $2137)
+    pub dsp: Option<Upd7725>, // DSP-1/2/3/4 на картридже (после загрузки прошивки)
 }
 
 impl Bus {
@@ -49,6 +51,7 @@ impl Bus {
             stall: 0,
             ppu: Ppu::new(),
             vline: 0,
+            dsp: None,
         }
     }
 
@@ -71,6 +74,33 @@ impl Bus {
         }
     }
 
+    /// Регистры DSP на шине: Some(false) = DR (данные), Some(true) = SR (статус).
+    fn dsp_reg(&self, bank: u8, off: u16) -> Option<bool> {
+        self.dsp.as_ref()?;
+        if self.cart.rom.len() > 0x10_0000 {
+            if matches!(bank, 0x60..=0x6F | 0xE0..=0xEF) {
+                return match off {
+                    0x0000..=0x3FFF => Some(false),
+                    0x4000..=0x7FFF => Some(true),
+                    _ => None,
+                };
+            }
+        } else if matches!(bank, 0x30..=0x3F | 0xB0..=0xBF) {
+            return match off {
+                0x8000..=0xBFFF => Some(false),
+                0xC000..=0xFFFF => Some(true),
+                _ => None,
+            };
+        }
+        None
+    }
+
+    pub fn clock_dsp(&mut self, master: u32) {
+        if let Some(d) = self.dsp.as_mut() {
+            d.clock(master);
+        }
+    }
+
     pub fn read(&mut self, addr: u32) -> u8 {
         let bank = (addr >> 16) as u8;
         let off = addr as u16;
@@ -79,7 +109,13 @@ impl Bus {
             (0x7F, _) => self.wram[0x10000 + off as usize],
             (0x00..=0x3F | 0x80..=0xBF, 0x0000..=0x1FFF) => self.wram[off as usize],
             (0x00..=0x3F | 0x80..=0xBF, 0x2000..=0x5FFF) => self.read_io(off),
-            _ => self.cart.read(bank, off),
+            _ => match self.dsp_reg(bank, off) {
+                Some(is_sr) => {
+                    let d = self.dsp.as_mut().unwrap();
+                    if is_sr { d.read_sr() } else { d.read_dr() }
+                }
+                None => self.cart.read(bank, off),
+            },
         }
     }
 
@@ -91,7 +127,11 @@ impl Bus {
             (0x7F, _) => self.wram[0x10000 + off as usize] = val,
             (0x00..=0x3F | 0x80..=0xBF, 0x0000..=0x1FFF) => self.wram[off as usize] = val,
             (0x00..=0x3F | 0x80..=0xBF, 0x2000..=0x5FFF) => self.write_io(off, val),
-            _ => self.cart.write(bank, off, val),
+            _ => match self.dsp_reg(bank, off) {
+                Some(false) => self.dsp.as_mut().unwrap().write_dr(val),
+                Some(true) => {}
+                None => self.cart.write(bank, off, val),
+            },
         }
     }
 
@@ -196,6 +236,41 @@ mod tests {
 
     fn bus() -> Bus {
         Bus::new(Cartridge::from_bytes(&vec![0u8; 0x8000]).unwrap())
+    }
+
+    #[test]
+    fn dsp_host_protocol_roundtrip() {
+        let mut rom = vec![0u8; 0x8000];
+        let h = 0x7FC0;
+        rom[h..h + 21].fill(b' ');
+        rom[h + 0x15] = 0x20;
+        rom[h + 0x16] = 0x03; // ROM + DSP
+        rom[h + 0x1C..h + 0x1E].copy_from_slice(&0xFFFFu16.to_le_bytes());
+        rom[0x7FFD] = 0x80;
+        let mut b = Bus::new(Cartridge::from_bytes(&rom).unwrap());
+        let jp = |brch: u32, na: u32| 0x80_0000 | (brch << 13) | (na << 2);
+        // программа DSP: просит слово у хозяина, прибавляет 1 и отдаёт обратно
+        b.dsp = Some(Upd7725::with_program(&[
+            0x00_0080,   // src=DR (ставит RQM)
+            jp(0x0C2, 1), // ждём, пока хозяин запишет слово (RQM сбросится)
+            0x00_0091,   // A = DR
+            0x09_0000,   // A += 1
+            0x00_0016,   // DR = A (ставит RQM)
+            jp(0x0C2, 5), // ждём, пока хозяин прочитает
+            jp(0x100, 0),
+        ]));
+        let run = |b: &mut Bus| {
+            for _ in 0..20 {
+                b.dsp.as_mut().unwrap().step();
+            }
+        };
+        run(&mut b);
+        assert_eq!(b.read(0x30_C000) & 0x80, 0x80); // SR: RQM
+        b.write(0x30_8000, 0x34); // DR: младший байт
+        b.write(0x30_8000, 0x12); // DR: старший байт
+        run(&mut b);
+        assert_eq!(b.read(0x30_C000) & 0x80, 0x80);
+        assert_eq!((b.read(0x30_8000), b.read(0x30_8000)), (0x35, 0x12));
     }
 
     #[test]

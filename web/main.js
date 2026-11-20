@@ -182,6 +182,8 @@ function saveSram(force) {
 addEventListener('pagehide', () => saveSram(true));
 document.addEventListener('visibilitychange', () => { if (document.hidden) saveSram(true); });
 
+const fwLabel = document.getElementById('fw');
+
 function loadRom(bytes, name) {
   try {
     const next = new Emulator(bytes);
@@ -198,7 +200,19 @@ function loadRom(bytes, name) {
         if (saved) emu.load_sram(fromB64(saved));
       } catch (err) { console.warn('Не удалось прочитать SRAM:', err); }
     }
-    status.textContent = `${emu.title() || name} (${emu.mapping()})${note}`;
+    // DSP-1/2/3/4: нужна прошивка, её выбирают один раз — дальше она хранится в браузере
+    const usesDsp = emu.uses_dsp();
+    fwLabel.hidden = !usesDsp;
+    if (usesDsp && !emu.dsp_ready()) {
+      try {
+        const fw = localStorage.getItem('snes-dsp-fw');
+        if (fw) emu.set_dsp_firmware(fromB64(fw));
+      } catch (err) { console.warn('Сохранённая прошивка DSP не подошла:', err); }
+    }
+    let warn = '';
+    if (usesDsp && !emu.dsp_ready()) warn = ' · ⚠ нужна прошивка DSP: выбери файл слева';
+    else if (!emu.chip_supported()) warn = ` · ⚠ ${emu.chip()} пока не поддерживается`;
+    status.textContent = `${emu.title() || name} (${emu.mapping()})${note}${warn}`;
   } catch (err) {
     status.textContent = `Ошибка: ${err}`;
   }
@@ -207,6 +221,18 @@ function loadRom(bytes, name) {
 document.getElementById('rom').onchange = async e => {
   const file = e.target.files[0];
   if (file) loadRom(new Uint8Array(await file.arrayBuffer()), file.name);
+};
+document.getElementById('fwfile').onchange = async e => {
+  const file = e.target.files[0];
+  if (!file || !emu) return;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    emu.set_dsp_firmware(bytes); // проверяет формат: бросит ошибку, если файл не подходит
+    try { localStorage.setItem('snes-dsp-fw', toB64(bytes)); } catch {}
+    loadRom(romBytes, romName); // перезапуск игры уже с прошивкой
+  } catch (err) {
+    status.textContent = `Прошивка не подошла: ${err}`;
+  }
 };
 const pauseBtn = document.getElementById('pause');
 pauseBtn.onclick = () => {

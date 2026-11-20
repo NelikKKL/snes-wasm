@@ -128,9 +128,10 @@ impl Ppu {
             0x0D..=0x14 => {
                 let i = ((reg - 0x0D) / 2) as usize;
                 if reg & 1 == 1 {
-                    self.hofs[i] = (((v as u16) << 8) | (self.ofs_latch & 0xF8) as u16 | ((self.hofs[i] >> 8) & 7)) & 0x3FF;
+                    // не обрезаем до 10 бит: вторая запись берёт 3 бита из старшего байта первой
+                    self.hofs[i] = ((v as u16) << 8) | (self.ofs_latch & 0xF8) as u16 | ((self.hofs[i] >> 8) & 7);
                 } else {
-                    self.vofs[i] = (((v as u16) << 8) | self.ofs_latch as u16) & 0x3FF;
+                    self.vofs[i] = ((v as u16) << 8) | self.ofs_latch as u16;
                 }
                 self.ofs_latch = v;
                 // M7HOFS/M7VOFS делят адреса с BG1HOFS/BG1VOFS, но имеют свою защёлку
@@ -372,10 +373,10 @@ impl Ppu {
         let w_px = tsz * if hbig { 64 } else { 32 };
         let h_px = tsz * if vbig { 64 } else { 32 };
         // первая видимая строка — scanline 1, поэтому VOFS = -1 выравнивает верх (так делает тест-ROM)
-        let py = (y + 1 + self.vofs[bg] as usize) % h_px;
+        let py = (y + 1 + (self.vofs[bg] & 0x3FF) as usize) % h_px;
         let words_per_tile = bpp * 4;
         for x in 0..W {
-            let px = (x + self.hofs[bg] as usize) % w_px;
+            let px = (x + (self.hofs[bg] & 0x3FF) as usize) % w_px;
             let (tx, ty) = (px / tsz, py / tsz);
             let screen = (tx >> 5) + (ty >> 5) * if hbig { 2 } else { 1 };
             let e = self.vram[(map_base + screen * 0x400 + (ty & 31) * 32 + (tx & 31)) & 0x7FFF];
@@ -625,6 +626,23 @@ mod tests {
         assert_eq!((p.read(0x3D), p.read(0x3D)), (100, 0));
         assert_eq!(p.read(0x3F) & 0x40, 0x40);
         assert_eq!(p.read(0x3F) & 0x40, 0);
+    }
+
+    #[test]
+    fn horizontal_scroll_keeps_all_low_bits() {
+        // игра пишет BGnHOFS дважды (младший, старший байт); раньше терялся бит 2
+        let mut p = Ppu::new();
+        for x in [5u16, 4, 12, 13, 0xFF, 0x1FD, 0x3FF, 1, 8] {
+            p.write(0x0D, x as u8);
+            p.write(0x0D, (x >> 8) as u8);
+            assert_eq!(p.hofs[0] & 0x3FF, x, "scroll = {}", x);
+        }
+        // равномерный скролл на 1 пиксель за кадр
+        for x in 0..64u16 {
+            p.write(0x0D, x as u8);
+            p.write(0x0D, 0);
+            assert_eq!(p.hofs[0] & 0x3FF, x);
+        }
     }
 
     #[test]

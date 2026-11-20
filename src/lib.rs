@@ -5,6 +5,7 @@ mod cpu;
 mod dsp;
 mod dma;
 mod ppu;
+mod upd7725;
 #[cfg(test)]
 mod rom_tests;
 
@@ -109,6 +110,7 @@ impl Emulator {
                 self.bus.hclock = h;
                 let cycles = self.cpu.step(&mut self.bus) + std::mem::take(&mut self.bus.stall);
                 self.bus.apu.clock(cycles);
+                self.bus.clock_dsp(cycles);
                 let next = h + cycles;
                 self.check_irq(v, h, next);
                 h = next;
@@ -125,6 +127,37 @@ impl Emulator {
     /// Накопленные стерео-отсчёты DSP (32 кГц, L/R вперемешку).
     pub fn take_audio(&mut self) -> Vec<i16> {
         std::mem::take(&mut self.bus.apu.out)
+    }
+
+    /// Сопроцессор картриджа ("нет", если его нет).
+    pub fn chip(&self) -> String {
+        self.bus.cart.chip.name().to_string()
+    }
+
+    /// false, если игре нужен сопроцессор, которого у эмулятора пока нет.
+    pub fn chip_supported(&self) -> bool {
+        match self.bus.cart.chip {
+            cartridge::Chip::None => true,
+            cartridge::Chip::Dsp => self.bus.dsp.is_some(),
+            _ => false,
+        }
+    }
+
+    /// Игре нужен DSP-1/2/3/4 (тогда требуется файл прошивки).
+    pub fn uses_dsp(&self) -> bool {
+        self.bus.cart.chip == cartridge::Chip::Dsp
+    }
+
+    pub fn dsp_ready(&self) -> bool {
+        self.bus.dsp.is_some()
+    }
+
+    /// Загружает прошивку DSP (8192 байта). Ошибка, если файл не похож на прошивку µPD7725.
+    pub fn set_dsp_firmware(&mut self, data: &[u8]) -> Result<(), JsValue> {
+        let mut d = upd7725::Upd7725::new();
+        d.load_firmware(data).map_err(|e| JsValue::from_str(&e))?;
+        self.bus.dsp = Some(d);
+        Ok(())
     }
 
     pub fn sram_len(&self) -> usize {
